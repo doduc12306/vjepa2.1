@@ -35,21 +35,15 @@ class Config:
     test_label_file = f"{label_dir}/test_labels_clean.csv"
 
     # ----- Backbone V-JEPA 2.1 -----
-    # "vit_gigantic_xformers" = ViT-G (2B, embed=1664)
-    # "vit_giant_xformers"    = ViT-g (1B, embed=1408)  ← khuyến nghị cho 24GB
-    # "vit_large"             = ViT-L (300M, embed=1024)
-    backbone_arch = "vit_base"
-    backbone_ckpt_url = (
-        "https://dl.fbaipublicfiles.com/vjepa2/vjepa2_1_vitb_384.pt"
-    )
-    backbone_ckpt_key = "target_encoder"
-    backbone_ckpt_local = None  # Đặt path local nếu đã download sẵn
+    # Danh sách models: vjepa2_1_vit_base_384, vjepa2_1_vit_large_384,
+    #                    vjepa2_1_vit_giant_384, vjepa2_1_vit_gigantic_384
+    backbone_hub_name = "vjepa2_1_vit_base_384"
+    embed_dim = 768   # base=768, large=1024, giant=1408, gigantic=1664
 
     img_size = 384
     patch_size = 16
     tubelet_size = 2
     num_frames = 16
-    embed_dim = 768   # Khớp với ViT-B/16
 
     # ----- Probe -----
     probe_depth = 4
@@ -360,40 +354,13 @@ class MultiViewSLRModel(nn.Module):
 
     @staticmethod
     def _build_backbone(cfg):
-        """Khởi tạo V-JEPA 2.1 encoder và load pretrained weights."""
-        # QUAN TRỌNG: V-JEPA 2.1 dùng VisionTransformer riêng
-        # ở app.vjepa_2_1.models, KHÁC với src.models
-        import app.vjepa_2_1.models.vision_transformer as vit21
-
-        encoder = vit21.__dict__[cfg.backbone_arch](
-            patch_size=cfg.patch_size,
-            img_size=(cfg.img_size, cfg.img_size),
-            num_frames=cfg.num_frames,
-            tubelet_size=cfg.tubelet_size,
-            use_sdpa=True,
-            use_SiLU=False,
-            wide_SiLU=True,
-            uniform_power=False,
-            use_rope=True,
-            img_temporal_dim_size=1,
-            interpolate_rope=True,
+        """Load V-JEPA 2.1 encoder qua torch.hub (tự động download weights)."""
+        print(f"[Backbone] Loading {cfg.backbone_hub_name} via torch.hub...")
+        encoder, _ = torch.hub.load(
+            '.', cfg.backbone_hub_name,
+            source='local', pretrained=True,
         )
-
-        # Load weights
-        ckpt_path = cfg.backbone_ckpt_local
-        if ckpt_path and os.path.exists(ckpt_path):
-            print(f"[Backbone] Loading from local: {ckpt_path}")
-            sd = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        else:
-            print(f"[Backbone] Downloading: {cfg.backbone_ckpt_url}")
-            sd = torch.hub.load_state_dict_from_url(
-                cfg.backbone_ckpt_url, map_location="cpu"
-            )
-        enc_sd = sd[cfg.backbone_ckpt_key]
-        enc_sd = {k.replace("module.", "").replace("backbone.", ""): v
-                  for k, v in enc_sd.items()}
-        msg = encoder.load_state_dict(enc_sd, strict=False)
-        print(f"[Backbone] Loaded: {msg}")
+        print(f"[Backbone] ✔ Loaded {cfg.backbone_hub_name}")
         return encoder
 
     def forward(self, v_left, v_center, v_right):
