@@ -52,7 +52,7 @@ class Config:
     dropout = 0.1
 
     # ----- Huấn luyện -----
-    batch_size = 16      # ViT-B rất nhẹ, tận dụng hết 24GB
+    batch_size = 4       # Probe nhẹ (24 tokens), backbone tuần tự
     num_epochs = 30
     lr = 3e-4
     weight_decay = 0.01
@@ -344,6 +344,10 @@ class MultiViewSLRModel(nn.Module):
         for p in self.backbone.parameters():
             p.requires_grad = False
 
+        # Tính số temporal tokens
+        self.num_temporal = cfg.num_frames // cfg.tubelet_size  # 16//2 = 8
+        self.num_spatial = (cfg.img_size // cfg.patch_size) ** 2  # (384//16)^2 = 576
+
         self.probe = AttentiveProbe(
             embed_dim=cfg.embed_dim,
             num_heads=cfg.probe_heads,
@@ -363,21 +367,32 @@ class MultiViewSLRModel(nn.Module):
         print(f"[Backbone] ✔ Loaded {cfg.backbone_hub_name}")
         return encoder
 
+    def _pool_spatial(self, feats):
+        """
+        Pool spatial patches, giữ lại temporal tokens.
+        (B, T*S, D) → (B, T, D)
+        Giảm 4608 tokens → 8 tokens per view.
+        """
+        B, N, D = feats.shape
+        T = self.num_temporal
+        S = N // T  # = num_spatial (576)
+        feats = feats.view(B, T, S, D)
+        return feats.mean(dim=2)  # (B, T, D)
+
     def forward(self, v_left, v_center, v_right):
         """
         3 views: mỗi cái (B, C, T, H, W).
-        Gộp 3 views thành 1 batch lớn → 1 lần forward backbone (nhanh hơn 3x).
+        Pool spatial → giữ temporal → concat 3 views → probe.
+        Kết quả: 3 views × 8 temporal = 24 tokens cho probe (rất nhẹ).
         """
-        B = v_left.size(0)
-
-        # Gộp 3 views: (3*B, C, T, H, W) → 1 forward pass duy nhất
-        stacked = torch.cat([v_left, v_center, v_right], dim=0)
+        # Xử lý tuần tự để tiết kiệm VRAM cho backbone
         with torch.no_grad():
-            all_feats = self.backbone(stacked)  # (3*B, N, D)
+            feat_l = self._pool_spatial(self.backbone(v_left))    # (B, 8, D)
+            feat_c = self._pool_spatial(self.backbone(v_center))  # (B, 8, D)
+            feat_r = self._pool_spatial(self.backbone(v_right))   # (B, 8, D)
 
-        # Tách lại 3 views và concat theo sequence dim
-        feat_l, feat_c, feat_r = all_feats.split(B, dim=0)
-        fused = torch.cat([feat_l, feat_c, feat_r], dim=1)  # (B, 3*N, D)
+        # Ghép 3 views: (B, 24, D)
+        fused = torch.cat([feat_l, feat_c, feat_r], dim=1)
 
         # Probe (có gradient)
         logits = self.probe(fused)
@@ -578,7 +593,7 @@ def main():
     print()
     print("┌" + "─"*68 + "┐")
     print("│" + " 🚀 BẮT ĐẦU HUẤN LUYỆN MULTI-VIEW".ljust(68) + "│")
-    print("│" + f"   Backbone: {cfg.backbone_arch} | Probe: {cfg.probe_depth}L/{cfg.probe_heads}H".ljust(68) + "│")
+    print("│" + f"   Backbone: {cfg.backbone_hub_name} | Probe: {cfg.probe_depth}L/{cfg.probe_heads}H".ljust(68) + "│")
     print("│" + f"   Classes: {cfg.num_classes} | Batch: {cfg.batch_size} | LR: {cfg.lr}".ljust(68) + "│")
     print("└" + "─"*68 + "┘")
     print()
