@@ -38,9 +38,9 @@ class Config:
     # "vit_gigantic_xformers" = ViT-G (2B, embed=1664)
     # "vit_giant_xformers"    = ViT-g (1B, embed=1408)  ← khuyến nghị cho 24GB
     # "vit_large"             = ViT-L (300M, embed=1024)
-    backbone_arch = "vit_giant_xformers"
+    backbone_arch = "vit_base"
     backbone_ckpt_url = (
-        "https://dl.fbaipublicfiles.com/vjepa2/vjepa2_1_vitg_384.pt"
+        "https://dl.fbaipublicfiles.com/vjepa2/vjepa2_1_vitb_384.pt"
     )
     backbone_ckpt_key = "target_encoder"
     backbone_ckpt_local = None  # Đặt path local nếu đã download sẵn
@@ -49,7 +49,7 @@ class Config:
     patch_size = 16
     tubelet_size = 2
     num_frames = 16
-    embed_dim = 1408  # Khớp với backbone_arch
+    embed_dim = 768   # Khớp với ViT-B/16
 
     # ----- Probe -----
     probe_depth = 4
@@ -58,7 +58,7 @@ class Config:
     dropout = 0.1
 
     # ----- Huấn luyện -----
-    batch_size = 3       # VRAM ~19GB/24GB với batch=3
+    batch_size = 16      # ViT-B rất nhẹ, tận dụng hết 24GB
     num_epochs = 30
     lr = 3e-4
     weight_decay = 0.01
