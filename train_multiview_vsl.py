@@ -542,7 +542,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
         print(f"[GPU] {torch.cuda.get_device_name(0)} "
-              f"({torch.cuda.get_device_properties(0).total_mem / 1e9:.0f}GB)")
+              f"({torch.cuda.get_device_properties(0).total_memory / 1e9:.0f}GB)")
 
     # ---- Labels (riêng cho từng split) ----
     print("\n" + "=" * 70)
