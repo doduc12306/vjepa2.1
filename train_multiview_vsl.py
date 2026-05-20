@@ -57,12 +57,12 @@ class Config:
     dropout = 0.1
 
     # ----- Huấn luyện -----
-    batch_size = 1       # Nhỏ vì 3 views × ViT-g rất tốn VRAM
+    batch_size = 2       # VRAM ~19GB/24GB với batch=2
     num_epochs = 30
     lr = 3e-4
     weight_decay = 0.01
     warmup_epochs = 2
-    num_workers = 4
+    num_workers = 8       # Tăng để data loading không thành bottleneck
     use_amp = True       # Mixed precision
 
     # ----- Checkpoint -----
@@ -188,6 +188,16 @@ class MultiViewDataset(Dataset):
         self.num_classes = num_classes
         self.short_side = int(256.0 / 224 * img_size)
 
+        # Cache transform pipeline (tạo 1 lần, dùng lại mọi __getitem__)
+        import src.datasets.utils.video.transforms as vtf
+        import src.datasets.utils.video.volume_transforms as vol
+        self._transform = vtf.Compose([
+            vtf.Resize(self.short_side, interpolation="bilinear"),
+            vtf.CenterCrop(size=(self.img_size, self.img_size)),
+            vol.ClipToTensor(),
+            vtf.Normalize(mean=self.IMAGENET_MEAN, std=self.IMAGENET_STD),
+        ])
+
         # Quét thư mục, nhóm theo sample_id
         # Chỉ giữ samples có label (nếu label_map được cung cấp)
         self.samples = self._scan_videos()
@@ -207,12 +217,10 @@ class MultiViewDataset(Dataset):
         for fname in os.listdir(self.split_dir):
             if not fname.endswith(".mp4"):
                 continue
-            # Pattern: {sample_id}_{view}_rgb.mp4
             m = re.match(r"^(\d+)_(k[flr])_rgb\.mp4$", fname)
             if m:
                 sid, view = m.group(1), m.group(2)
                 groups[sid][view] = os.path.join(self.split_dir, fname)
-        # Sắp xếp theo sample_id
         return sorted(groups.items(), key=lambda x: int(x[0]))
 
     def __len__(self):
@@ -221,10 +229,8 @@ class MultiViewDataset(Dataset):
     def _load_video(self, video_path):
         """Đọc video, sample frames, tiền xử lý → tensor (C, T, H, W)."""
         from decord import VideoReader, cpu
-        import src.datasets.utils.video.transforms as vtf
-        import src.datasets.utils.video.volume_transforms as vol
 
-        vr = VideoReader(video_path, ctx=cpu(0))
+        vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
         total = len(vr)
         if total <= 0:
             return None
@@ -238,16 +244,8 @@ class MultiViewDataset(Dataset):
             indices = np.concatenate([indices, pad])
 
         frames = vr.get_batch(indices).asnumpy()  # (T, H, W, C)
-
-        # Tiền xử lý: Resize → CenterCrop → ToTensor → Normalize
-        transform = vtf.Compose([
-            vtf.Resize(self.short_side, interpolation="bilinear"),
-            vtf.CenterCrop(size=(self.img_size, self.img_size)),
-            vol.ClipToTensor(),
-            vtf.Normalize(mean=self.IMAGENET_MEAN, std=self.IMAGENET_STD),
-        ])
         frame_list = [frames[i] for i in range(frames.shape[0])]
-        return transform(frame_list)  # (C, T, H, W)
+        return self._transform(frame_list)  # (C, T, H, W)
 
     def __getitem__(self, idx):
         sid, view_paths = self.samples[idx]
@@ -397,23 +395,21 @@ class MultiViewSLRModel(nn.Module):
         print(f"[Backbone] Loaded: {msg}")
         return encoder
 
-    def _extract_features(self, video):
-        """Trích xuất features từ 1 view. video: (B, C, T, H, W)."""
-        with torch.no_grad():
-            feats = self.backbone(video)  # (B, N, D)
-        return feats
-
     def forward(self, v_left, v_center, v_right):
         """
         3 views: mỗi cái (B, C, T, H, W).
-        Xử lý tuần tự qua backbone để tiết kiệm VRAM.
+        Gộp 3 views thành 1 batch lớn → 1 lần forward backbone (nhanh hơn 3x).
         """
-        feat_l = self._extract_features(v_left)
-        feat_c = self._extract_features(v_center)
-        feat_r = self._extract_features(v_right)
+        B = v_left.size(0)
 
-        # Ghép 3 chuỗi đặc trưng: (B, 3*N, D)
-        fused = torch.cat([feat_l, feat_c, feat_r], dim=1)
+        # Gộp 3 views: (3*B, C, T, H, W) → 1 forward pass duy nhất
+        stacked = torch.cat([v_left, v_center, v_right], dim=0)
+        with torch.no_grad():
+            all_feats = self.backbone(stacked)  # (3*B, N, D)
+
+        # Tách lại 3 views và concat theo sequence dim
+        feat_l, feat_c, feat_r = all_feats.split(B, dim=0)
+        fused = torch.cat([feat_l, feat_c, feat_r], dim=1)  # (B, 3*N, D)
 
         # Probe (có gradient)
         logits = self.probe(fused)
