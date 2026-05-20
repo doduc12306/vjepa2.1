@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 # ============================================================================
 # CẤU HÌNH
@@ -57,7 +58,7 @@ class Config:
     dropout = 0.1
 
     # ----- Huấn luyện -----
-    batch_size = 2       # VRAM ~19GB/24GB với batch=2
+    batch_size = 3       # VRAM ~19GB/24GB với batch=3
     num_epochs = 30
     lr = 3e-4
     weight_decay = 0.01
@@ -457,7 +458,12 @@ def train_one_epoch(model, loader, optimizer, criterion, device, epoch, cfg,
     total_loss, total_correct, total_samples = 0.0, 0, 0
     ipe = len(loader)
 
-    for step, (vl, vc, vr, labels) in enumerate(loader):
+    pbar = tqdm(enumerate(loader), total=ipe,
+                desc=f"  ⚡ Train E{epoch+1:02d}",
+                bar_format='{l_bar}{bar:30}{r_bar}',
+                dynamic_ncols=True)
+
+    for step, (vl, vc, vr, labels) in pbar:
         lr = warmup_cosine_lr(optimizer, epoch, step, ipe, cfg)
         vl = vl.to(device, non_blocking=True)
         vc = vc.to(device, non_blocking=True)
@@ -487,11 +493,15 @@ def train_one_epoch(model, loader, optimizer, criterion, device, epoch, cfg,
         total_correct += logits.detach().argmax(1).eq(labels).sum().item()
         total_samples += bs
 
-        if step % 20 == 0:
-            mem = torch.cuda.max_memory_allocated() / 1e9
-            print(f"  [E{epoch+1}][{step}/{ipe}] loss={loss.item():.4f} "
-                  f"lr={lr:.2e} mem={mem:.1f}GB")
+        # Cập nhật progress bar
+        running_loss = total_loss / total_samples
+        running_acc = 100.0 * total_correct / total_samples
+        mem = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+        pbar.set_postfix_str(
+            f"loss={running_loss:.3f} acc={running_acc:.1f}% "
+            f"lr={lr:.1e} mem={mem:.1f}G")
 
+    pbar.close()
     avg_loss = total_loss / max(total_samples, 1)
     acc = 100.0 * total_correct / max(total_samples, 1)
     return avg_loss, acc
@@ -502,7 +512,12 @@ def evaluate(model, loader, criterion, device, cfg):
     model.eval()
     total_loss, total_correct, total_samples = 0.0, 0, 0
 
-    for vl, vc, vr, labels in loader:
+    pbar = tqdm(loader, total=len(loader),
+                desc="  ✔ Valid     ",
+                bar_format='{l_bar}{bar:30}{r_bar}',
+                dynamic_ncols=True)
+
+    for vl, vc, vr, labels in pbar:
         vl = vl.to(device, non_blocking=True)
         vc = vc.to(device, non_blocking=True)
         vr = vr.to(device, non_blocking=True)
@@ -521,6 +536,10 @@ def evaluate(model, loader, criterion, device, cfg):
         total_correct += logits.argmax(1).eq(labels).sum().item()
         total_samples += bs
 
+        running_acc = 100.0 * total_correct / total_samples
+        pbar.set_postfix_str(f"acc={running_acc:.1f}%")
+
+    pbar.close()
     avg_loss = total_loss / max(total_samples, 1)
     acc = 100.0 * total_correct / max(total_samples, 1)
     return avg_loss, acc
@@ -589,9 +608,13 @@ def main():
     best_val_acc = 0.0
 
     # ---- Training ----
-    print("\n" + "=" * 70)
-    print("BẮT ĐẦU HUẤN LUYỆN MULTI-VIEW")
-    print("=" * 70)
+    print()
+    print("┌" + "─"*68 + "┐")
+    print("│" + " 🚀 BẮT ĐẦU HUẤN LUYỆN MULTI-VIEW".ljust(68) + "│")
+    print("│" + f"   Backbone: {cfg.backbone_arch} | Probe: {cfg.probe_depth}L/{cfg.probe_heads}H".ljust(68) + "│")
+    print("│" + f"   Classes: {cfg.num_classes} | Batch: {cfg.batch_size} | LR: {cfg.lr}".ljust(68) + "│")
+    print("└" + "─"*68 + "┘")
+    print()
 
     for epoch in range(cfg.num_epochs):
         t0 = time.time()
@@ -602,12 +625,15 @@ def main():
             model, val_loader, criterion, device, cfg)
         elapsed = time.time() - t0
 
-        print(f"\n>>> Epoch {epoch+1}/{cfg.num_epochs} ({elapsed:.0f}s)")
-        print(f"    Train: loss={train_loss:.4f} acc={train_acc:.2f}%")
-        print(f"    Valid: loss={val_loss:.4f} acc={val_acc:.2f}%")
+        # Epoch summary
+        is_best = val_acc > best_val_acc
+        star = " ⭐" if is_best else ""
+        print(f"\n  ┌── Epoch {epoch+1:02d}/{cfg.num_epochs} "
+              f"{'='*45} ({elapsed:.0f}s)")
+        print(f"  │  Train  │ loss={train_loss:.4f}  acc={train_acc:.2f}%")
+        print(f"  │  Valid  │ loss={val_loss:.4f}  acc={val_acc:.2f}%{star}")
 
         # Lưu best checkpoint (CHỈ PROBE)
-        is_best = val_acc > best_val_acc
         if is_best:
             best_val_acc = val_acc
             path = os.path.join(cfg.save_dir, "best_probe.pt")
@@ -618,7 +644,7 @@ def main():
                 "config": {k: v for k, v in vars(cfg).items()
                            if not k.startswith("_")},
             }, path)
-            print(f"    ✅ Best saved: {path} (acc={best_val_acc:.2f}%)")
+            print(f"  │  ✔ Best  │ saved → {path}")
 
         # Lưu checkpoint định kỳ
         if (epoch + 1) % cfg.save_every == 0:
@@ -630,11 +656,14 @@ def main():
                 "train_acc": train_acc,
                 "val_acc": val_acc,
             }, path)
-            print(f"    💾 Periodic saved: {path}")
+            print(f"  │  💾 Save │ saved → {path}")
 
-    print(f"\n{'='*70}")
-    print(f"HOÀN TẤT! Best Val Acc: {best_val_acc:.2f}%")
-    print(f"{'='*70}")
+        print(f"  └{'='*65}")
+
+    print()
+    print("┌" + "─"*68 + "┐")
+    print("│" + f" ✅ HOÀN TẤT! Best Val Acc: {best_val_acc:.2f}%".ljust(68) + "│")
+    print("└" + "─"*68 + "┘")
 
 
 if __name__ == "__main__":
