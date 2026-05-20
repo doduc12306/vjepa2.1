@@ -581,7 +581,7 @@ def main():
 │ 🚀 MULTI-VIEW SIGN LANGUAGE RECOGNITION                        │
 │   Backbone : {cfg.hub_name:<50s}│
 │   Probe    : {cfg.probe_depth}L / {cfg.probe_heads}H / {cfg.num_queries}Q {'':40s}│
-│   Classes  : {cfg.num_classes:<5d} | Batch: {eff_bs:<4d} | LR: {cfg.lr:<20s}│
+│   Classes  : {cfg.num_classes:<5d} | Batch: {eff_bs:<4d} | LR: {cfg.lr:<20}│
 │   Train    : {len(train_ds):<5d} | Valid: {len(val_ds):<28d}│
 └──────────────────────────────────────────────────────────────────┘""")
 
