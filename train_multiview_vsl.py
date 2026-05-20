@@ -535,6 +535,9 @@ def evaluate(model, loader, criterion, device, cfg):
 # ============================================================================
 
 def main():
+    # Chỉ dùng GPU 1
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
     cfg = Config()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
